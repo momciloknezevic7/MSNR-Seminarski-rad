@@ -1,0 +1,370 @@
+\documentclass[a4paper]{article}
+
+\usepackage{color}
+\usepackage{url}
+\usepackage[utf8]{inputenc} 
+\usepackage{graphicx}
+\usepackage[english,serbian]{babel}
+\usepackage[unicode]{hyperref}
+\hypersetup{colorlinks,citecolor=green,filecolor=green,linkcolor=blue, urlcolor=blue}
+\usepackage{listings}
+
+\newtheorem{primer}{Primer}[section]
+
+\definecolor{mygreen}{rgb}{0,0.6,0}
+\definecolor{mygray}{rgb}{0.5,0.5,0.5}
+\definecolor{mymauve}{rgb}{0.58,0,0.82}
+
+\lstset{ 
+  backgroundcolor=\color{white},  
+  basicstyle=\scriptsize\ttfamily, 
+  breakatwhitespace=false,         
+  breaklines=true,                 
+  captionpos=b,                   
+  commentstyle=\color{mygreen},    
+  deletekeywords={...},            
+  escapeinside={\%*}{*)},         
+  extendedchars=true,              
+  firstnumber=1000,                
+  frame=single,	                   
+  keepspaces=true,                 
+  keywordstyle=\color{blue},       
+  language=C++,                 
+  morekeywords={*,...},          
+  numbers=none,                  
+  numbersep=5pt,                  
+  numberstyle=\tiny\color{mygray}
+  rulecolor=\color{black},         
+  showspaces=false,                
+  showstringspaces=false,          
+  showtabs=false,                  
+  stepnumber=2,                    
+  stringstyle=\color{mymauve},   
+  tabsize=2,
+  title=\lstname 
+}
+
+\begin{document}
+
+\title{GraalVM Native Image\\ \small{Seminarski rad u okviru kursa\\Metodologija stručnog i naučnog rada\\ Matematički fakultet}}
+
+\author{David Nestorović, Momčilo Knežević\\ david.nestorovic@gmail.com, moma.knezevic7@gmail.com}
+
+\date{12.decembar 2022}
+
+\maketitle
+
+\abstract{
+Kao jedan od najzastupljenijih jezika današnjice, izdvaja se Java programski jezik. Sa tim u vezi, problemima kao što su brzina prevođenja i izvršavanja programa, posvećuje se posebna pažnja. Kako se sve više svet programiranja usmerava ka Cloud tehnologijama, ovakvi problemi postaju još vidljiviji jer se najčešće ovi resursi naplaćuju. Ovaj rad objašnjava kako se ovi problemi mogu prevazići korišćenjem GraalVM Native Image-a.
+}
+
+\tableofcontents
+
+\newpage
+\section{Uvod}
+\label{sec:uvod}
+ Tradicionalni način prevođenja Java programa podrazumeva korišćenje JVM interpretera. Međutim bez obzira na visoke performanse ovog interpretera, on nije tako brz kao pokretanje kompajliranog koda(eng.~{\em compiled code}). Iz tog razloga, originalni Oracle-ov JDK poseduje i dva JIT kompajlera - C1 i C2. C1 kompajler još je poznat i kao \textit{klijentski kompajler}, i prevashodno se koristi kada je potrebno kod brzo kompajlirati sa manje optimizacija. S druge strane, C2 se naziva \textit{serverskim kompajlerom}, sporiji je ali vrši detaljnije optimizacije. Klasični JVM pristup često korišćene delove koda kompajlira u mašinski kod(C1 JIT kompajler). Zatim, ukoliko učestalost izvršavanja nekog dela koda pređe određeni prag taj deo se kompajlira C2 JIT kompajlerom. Iako na prvi pogled ovo deluje kao idealno rešenjen(jer se nivo optimizacije određuje učestalošću izvršavanja nekog dela koda), ipak ovaj pristup ima određene mane, kada JVM vrši operacije poput: verifikacije koda, učitavanja klasa, interpretiranja bajtkoda(eng.~{\em bytecode}), prikupljanja profila... za to su mu neophodne kompleksne operacije a samim tim i veliko zauzeće procesora. Pored toga JVM zahteva i određenu memoriju za svoj rad, prvenstveno za smeštanje profila. \cite{Uvod}
+ 
+\begin{primer}
+Ovaj nedostatak najviše se odražava na Cloud sisteme. U situacijama kada se opterećenost nekog servera poveća, Cloud platforma u pozadini servera pokreće nove radnike(eng.~{\em workers}) da bi procesuirali pristigli posao. Prvi zahtev koji novi radnik obrađuje značajno je sporiji(jer radnik mora da obavi određene inicijalizacije pre početka procesuiranja samog zahteva) i naziva se hladni start(eng.~{\em cold start}). Najbolji primer za hladni start daju nam JVM i .NET platforme, koje u hladnom startu moraju izvršiti veliki broj kompleksnih operacija koje su prethodno pomenute. 
+ \end{primer}
+ 
+Jedan način da se prevaziđe ovaj problem je da se koristi GraalVM Native Image umesto tradicionalnog JVM pristupa, na način koji će biti opisan u nastavku.
+
+
+\section{GraalVM}
+\label{sec:graalvm}
+GraalVM je nastao pre deset godina kao istraživački projekat Oracle Labs-a, koji i dan danas predstavlja ogranak kompanije Oracle i bavi se istraživanjima na poljima virtuelnih mašina, mašinskog učenja i raznih drugih oblasti.
+GraalVM je u osnovi kombinacija Java Virtuelne mašine i JDK-a(eng.~{\em Java Development Kit}) i obuhvata:
+\begin{itemize}
+    \item GraalVM kompajler(JIT kompajler za Javu)
+    \item GraalVM Native Image(AOT kompajler za Javu)
+    \item Truffle(Biblioteka za izgradnju alata i programskih jezika koja omogućuje pokretanje programskih jezika Python, Ruby, R i drugih na JVM-u)
+\end{itemize} 
+Na slici \ref{fig:arhitektura} prikazana je arhitektura GraalVM-a. U samoj osnovi nalazi se Java Hotspot VM, na koji se naslanja GraalVM kompajler. Jezici iz Java familije prevode se upravo pomoću GraalVM kompajlera, dok je za prevođenje ostalih jezika podržanih od strane GraalVM projekta zadužen dodatni sloj koji u osnovi koristi Truffle \cite{Arhitektura}. \\
+Glavni ciljevi GraalVM projekta su:
+\begin{itemize}
+    \item Poboljšanje performansi jezika koji se zasnivaju na Java virtuelnoj mašini kako bi brzina njihovog izvršavanja bila što približnija izvršavanjima programa koji svoj kod prevode u izvršne datoteke(eng.~{\em native languages})(ujedno i cilj Native Image-a).
+    \item Smanjenje vremena pokretanja aplikacija koje se zasnivaju na Java virtuelnoj mašini, tehnikom kompajliranja unapred i korišćenjem GraalVM Native Image-a(ujedno i cilj Native Image-a).
+    \item Omogućavanje da se GraalVM integriše sa sledećim i njima sličnim tehnologijama: Oracle database, OpenJDK, Node.js, Android/iOS...
+    \item Omogućavanje da se u jednom programu koristi više različitih programskih jezika(eng.~{\em polyglot applications}).
+\end{itemize} 
+
+
+\begin{figure}[h!]
+\begin{center}
+\includegraphics[scale=0.35]{graalVM_arhitektura.png}
+\end{center}
+\caption{Arhitektura GraalVM-a}
+\label{fig:arhitektura}
+\end{figure}
+
+
+\section{Native Image}
+\label{sec:native_image}
+Native Image je tehnologija razvijena unutar GraalVM projekta koja omogućuje AOT kompajliranje Java koda u samostalnu izvršnu datoteku(eng.~{\em standalone executable}) pod nazivom native image.
+Native Image omogućuje smanjenje memorijskog zauzeća(eng.~{\em memory footprint}) i vremena potrebnog za pokretanje aplikacije. Kako bi ovo bilo moguće, neophodno je da bude ispunjen uslov zatvorenog sveta(eng.~{\em closed-world}) što podrazumeva da je sav kod poznat za vreme pravljenja slike(eng.~{\em image build time})(tj. ne postoji kod koji bi se učitao u vreme izvršavanja aplikacije).
+
+
+\subsection{Pregled sistema}
+Pravljenje native image-a možemo podeliti u dve faze: izgradnja slike(eng.~{\em build time}) i izvršavanje slike(eng.~{\em run time}), pri čemu se gotovo ceo proces obavlja u fazi izgradnje slike. U fazi izvršavanja, obavlja se nekolicina inicijalizacija i to pre pokretanja glavne funkcije(eng.~{\em main function}), npr. mapiranje memorije(eng.~{\em memory-mapping}). \\
+\indent Kao ulaz za proces izgradnje native image-a koristi se Java bajtkod, dobijen kompajliranjem bilo kojeg jezika koji se može prevesti u bajtkod(Java, Skala, Kotlin). Pored toga na isti način se obrađuje aplikacija, biblioteke koje ona koristi, JDK i komponente virtuelne mašine neophodne za proces. \\
+\indent Proces počinje iterativnim ponavljanjem narednih tehnika analize koda sve dok nije dostignut unapred definisan prag zaustavljanja \cite{PregledSistema}:
+    \begin{itemize}
+        \item \textbf{Analiza pokazivača(eng.~{\em points-to analysis})}
+        \item \textbf{Izvršavanje inicijalizacija(eng.~{\em run initializations})}
+        \item \textbf{Kreiranje slike hipa(eng.~{\em heap snapshotting})}
+    \end{itemize}
+Kao rezultat analize dobija se lista dohvatljivih(eng.~{\em heap reachable}) klasa, metoda i polja, kao i graf dohvatljivih objekata(eng.~{\em object graph}). Potom se dohvatljive metode prevode u mašinski kod, a graf dohvatljivih objekata se upisuje u hip memoriju slike. Na kraju se, mašinski kod čuva u tekst sekciji slike, a hip slike u sekciji podataka. Ceo proces predstavljen je na slici  \ref{fig:pregledIzvrsavanja}. 
+
+
+\subsubsection{Analiza pokazivača} 
+Ova tehnika se, u opštem smislu, koristi za identifikovanje veza između pokazivačkih promenljivih i lokacija na koje pokazuju u vreme izvršavanja aplikacije \cite{AnalizaPokazivaca}.
+\begin{primer}
+Rezultat analize pokazivača na narednom kodu, pokazao bi da je skup promenljivih na koje pokazuje pokazivač p zapravo {x, y}
+    \begin{lstlisting}[caption={Primer koda koji se analizira od strane tehnike analize pokazivača},frame=single, label=simple]
+int x;
+int y;
+int* p = unknown() ? &x : &y;
+    \end{lstlisting}
+\end{primer}
+
+Na primeru Native Image, koristi se za određivanje svih klasa, metoda i polja do kojih je moguće doći
+izvršavanjem koda. Proces  počinje analizom svih ulaznih tačaka aplikacije, npr. glavne metode(eng.~{\em
+main method}), a zatim se iterativnim postupkom utvrđuju sve metode koje su tranzitivno dohvatljive iz
+polaznih tačaka programa.
+
+Ova tehnika, koristi kompajler iz GraalVM-a za parsiranje Java bajtkoda, kako bi se dobila određena međureprezentacija(eng.~{\em intermediate representation}). U sledećem koraku ova međureprezentacija se prevodi u tzv. graf toka tipova(eng.~{\em type-flow graph}). Svaki čvor u dobijenom grafu održava listu tipova koji mogu dostići ovaj čvor, dok su grane usmerene od čvora koji poziva ka čvoru koji je pozvan. U slučaju da se stanje nekog čvora promeni, promena se propagira naviše, tj. svi čvorovi koji pozivaju čvor u kom se desila promena, ažuriraju svoju listu dohvatljivih tipova. Pored osnovnih informacija,  ovako dobijeni graf predstavlja reprezentaciju dohvatljivih tipova cele aplikacije. \cite{AnalizaPokazivaca}.
+
+Iako jako teška za izvođenje u fazi prevođenja, uspešno izvođenje ove tehnike omogućuje pojednostavljenja u nekim drugim tehnikama analize koda(recimo u tehnici propagacije konstanti).
+
+
+\subsubsection{Izvršavanje inicijalizacija}
+Kada je analiza pokazivača dostigla određeni prag, prelazi se na izvršavanje inicijalizacija i to:
+\begin{itemize}
+    \item \textbf{Inicijalizacija klasa} - svaka klasa u jeziku Java može da ima inicijalizatora klase koji se u "class" fajlu naziva \textbf{clinit}.
+    \item Aplikacija može eksplicitno da registruje funkcije koje se izvršavaju u fazi izgradnje slike i to korišćenjem unapred definisanih okidača(eng.~{\em hooks}):
+    \begin{itemize}
+        \item pre analize(eng.~{\em before analysis})
+        \item tokom analize(eng.~{\em during analysis})
+        \item nakon analize(eng.~{\em after analysis})
+    \end{itemize}
+\end{itemize}
+
+
+\begin{figure}[h!]
+\begin{center}
+\includegraphics[scale=0.3]{Native_Image_tok.png}
+\end{center}
+\caption{Pregled izvršavanja Native Image-a}
+\label{fig:pregledIzvrsavanja}
+\end{figure}
+
+
+\subsubsection{Kreiranje slike hipa}
+Ova tehnika, kao ulazni parametar koristi neke od podataka dobijenih u analizi pokazivača, a kao finalni proizvod daje graf objekata. Graf objekata se upisuje u native image kao hip slike(eng.~{\em image heap}). Obzirom da je hip slike inicijalizovan u fazi izgradnje slike, dostupan je odmah u fazi pokretanja aplikacije, te se samim tim sva inicijalizacija(koju bi Java radila u fazi izvršavanja) obavila ranije. Praktično, to znači da se vreme za pokretanje aplikacije drastično smanjilo, izmeštanjem posla u fazu izgradnje slike \cite{AnalizaPokazivaca}.
+
+
+\subsection{Faze izvršavanja Native Image-a}
+U cilju smanjivanja vremena pokretanja aplikacije(eng.~{\em startup time}) i memorijskog zauzeća Native Image kombinuje tehnike kao što su: points-to analysis, inicijalizacija aplikacije u vreme izgradnje aplikacije, heap snapshotting, i AOT kompilaciju. Tokom svog izvršavanja, Native Image prolazi kroz sledeće faze \cite{FazeIzvrsavanja}:
+\begin{enumerate}
+    \item \textbf{Inicijalizacija(eng.~{\em Initializing})} - podrazumeva pripreme za izgradnju slike i inicijalizaciju posebno definisanog korisničkog koda.
+    \item \textbf{Analiza(eng.~{\em Performing Analysis})} - pokreće se analiza pokazivača i dobija se kompletna statistika dohvatljivih klasa, metoda i polja. Anomalije u ovim statistikama mogu ukazivati na loše struktuiran kod(velika razlika u broju dohvatljivih u odnosu na ukupan broj definisanih elemenata može sugerisati da je potrebno refaktorisati kod)
+    \item \textbf{ Pravljenje univerzuma(eng.~{\em Building Universe})} - u ovoj fazi se: objedinjuju se rezultati analize, dobijeni elementi se organizuju, uključuju se mehanizmi za manipulaciju dobijenim elementima i definiše se interfejs za njihovo korišćenje.
+    \item \textbf{Parsiranje metoda(eng.~{\em Parsing Methods})} - sve dohvatljive metode parsiraju se GraalVM kompajlerom. 
+    \item \textbf{Inlajnovanje metoda(eng.~{\em Inlining Methods})} - parsirane metode iz prethodnog koraka podležu optimizacionoj tehnici \textit{inlining-a}. 
+    \item \textbf{Kompilacija metoda(eng.~{\em Compiling Methods})} - GraalVM kompajler prevodi sve dohvatljive metode.
+    \item \textbf{Pravljenje slike(eng.~{\em Creating Image})} - fizički se kreira izvršna datoteka i upisuje na sekundarnu memoriju.
+\end{enumerate}
+Na slici \ref{fig:fazeIzvrsavanja} dat je prikaz ispisa na standardnom izlazu nakon pokretanja Native Image-a. Kao što se sa slike može primetiti, tokom izvršavanja svake od faza, korisnik ima uvid u progres ostvaren tokom određene faze, kao i koliko svaka od faza zahteva vremena i memorijskog prostora. 
+
+
+\begin{figure}[h!]
+\begin{center}
+\includegraphics[scale=0.4]{Faze_izvrsavanja.png}
+\end{center}
+\caption{Faze izvršavanja Native Image-a}
+\label{fig:fazeIzvrsavanja}
+\end{figure}
+
+
+\section{Problemi}
+Nažalost, nisu sve aplikacije povoljne za ovakvu vrstu optimizacije. Radi ispunjenja uslova zatvorenog sveta, sav kod mora biti poznat u vreme izgradnje slike. Samim tim, da bi se ovi problemi rešili, neke dinamičke osobine jezika Java moraju biti rešene na drugačije načine nego što je to uobičajeno.
+
+
+\begin{primer}
+Recimo da imamo klasu  kojoj se može pristupiti u vreme izvršavanja, na primer \textbf{Class.forName("myClass")}. Ta klasa mora nekako biti poznata u fazi pravljenja slike. Ovaj problem prevaziđen je uvođenjem konfiguracionih fajlova(eng.~{\em configuration files}) u kojima je potrebno navesti klase očekivane u vremenu izvršavanja aplikacije.
+\end{primer}
+
+
+\begin{primer}
+Slično važi i ukoliko je u kodu korišćena refleksija. Svi elementi koji se mogu očekivati kao rezultat refleksije moraju biti navedeni u konfiguracionim fajlovima.
+\end{primer}
+
+
+Ukoliko aplikaciju nije moguće optimizovati a pritom \textbf{ne} postoje konfiguracioni fajlovi, pristupa se
+pravljenju tzv. rezervne slike(eng.~{\em fallback image}) koja u osnovi pokreće standardni JVM. Ukoliko
+postoje elementi koji nisu registrovani u konfiguracionim fajlovima, a oni postoje, biće prijavljena greška
+pri prevođenju. 
+
+Takođe, u cilju rešavanja raznih drugih situacija u kojima tradicionalni Java pristup(učitavanja koda u
+vremenu izvršavanja) narušava uslov zatvorenog sveta, osmišljen je princip zamene(eng.~{\em substitution}).
+U osnovi, ova tehnika je jednostavna, i podrazumeva da svaki kritični deo originalne Java implementacije treba zameniti implementacijom koja pogoduje Native Image pristupu. Teži deo ovog pristupa ogleda se u tome što nekada nije tako jednostavno zameniti dinamički deo koda, kodom koji bi se mogao u potpunosti prevesti u fazi izgradnje slike \cite{Substitucije}. 
+
+
+\begin{primer}
+Kako bi se Native Image-u naglasilo da neku klasu koristi kao zamensku klasu, ili da neki metod iz
+originalne klase treba obrisati ili zameniti, potrebno je koristiti predefinisane anotacije. Najpre je
+neophodno navesti koju klasu želimo da promenimo koristeći anotaciju \textbf{@TargetClass} koja kao
+argument prihvata klasu koja se menja. Zatim sledi telo zamenske klase u okviru kojeg je moguće: \begin{itemize}
+    \item koristiti polje iz originalne klase, navođenjem \textbf{@Alias} anotacije
+    \item obrisati polje iz originalne klase, navođenjem \textbf{@Delete} anotacije
+    \item zameniti metodu originalne klase novom, navođenjem \textbf{@Substitute} anotacije
+\end{itemize}
+    \begin{lstlisting}[caption={Primer primene metode zamene},frame=single, label=simple]
+@TargetClass(OriginalnaKlasa.class)
+public final class Target_OriginalnaKlasa {
+
+    @Alias  private static String poljeIzOriginalneKlase;          
+    @Delete private static String poljeOriginalneKlaseKojeBrisemo;
+
+    @Substitute
+    public static String metodaKojuZelimoDaZamenimo() {
+        // nova logika
+    }
+}           
+    \end{lstlisting}
+\end{primer}
+
+Obzirom da je veliki deo inicijalizacije izmešten u fazu izgradnje slike, a potencijalno se nešto od toga
+može koristiti i u fazi izvršavanja, neophodno je ostvariti komunikaciju između ove dve faze. Ovaj problem 
+prevaziđen je korišćenjem skladišta ključ-vrednost konstanti. Konceptom nazvanim \textbf{image singleton}
+ostvaruje se konekcija između ove dve faze. Objekat je moguće dodati samo u fazi izgradnje slike korišćenjem
+metode \textbf{add} dok je pristup objektu moguć u bilo kojoj fazi korišćenjem metode \textbf{lookup} 
+\cite{PregledSistema}.
+
+
+\section{Performanse Native Image-a}
+Kako bi se stekao adekvatan utisak da li je i koliko ovakav pristup prevođenja primenljiv u praksi, naveli smo nekoliko primera poređenja performansi izvršavanja programa, prevedenih Native Image-om, i nekim drugim relevantnim programskim prevodiocima. 
+
+
+\begin{primer}
+U tabeli \ref{tab:poređenje} dato je poređenje: vremena izvršavanja programa, broja instrukcija i maksimalnog memorijskog zauzeća na primeru programa "Hello World". Prema rezultatima navedenim u tabeli, performanse Native Image-a daleko nadmašuju performanse JDK-a, dok su u poređenju sa programskim jezikom C, performanse neznatno lošije \cite{PregledSistema}.
+\end{primer}
+
+
+\begin{table}[h!]
+\begin{center}
+\scalebox{0.65}{
+\renewcommand{\arraystretch}{1.7}
+\begin{tabular}{|c|c|c|c|c|}
+\hline
+                                                                                    & \textbf{\begin{tabular}[c]{@{}c@{}}Vreme izvršavanja \\ {[}ms{]}\end{tabular}} & \textbf{\begin{tabular}[c]{@{}c@{}}Instrukcije \\ korisničkog koda\\  {[}milioni{]}\end{tabular}} & \textbf{\begin{tabular}[c]{@{}c@{}}Instrukcije\\(ukupno)\\ {[}milioni{]}\end{tabular}} & \textbf{\begin{tabular}[c]{@{}c@{}}Maksimalno zauzeće \\ memorije\\ {[}MB{]}\end{tabular}} \\ \hline
+\textbf{C}                                                                          & 0.9                                                                           & 0.09                                                                                            & 0.43                                                                                    & 1.10                                                                                  \\ \hline
+\textbf{Go}                                                                         & 1.9                                                                           & 0.47                                                                                            & 1.23                                                                                    & 7.29                                                                                  \\ \hline
+\textbf{\begin{tabular}[c]{@{}c@{}}JDK 8,\\ Java HotSpot VM\end{tabular}}           & 103.9                                                                         & 152.45                                                                                          & 171.41                                                                                  & 37.50                                                                                 \\ \hline
+\textbf{\begin{tabular}[c]{@{}c@{}}JDK 12,\\ Java HotSpot VM\end{tabular}}          & 74.8                                                                          & 119.13                                                                                          & 144.09                                                                                  & 52.26                                                                                 \\ \hline
+\textbf{\begin{tabular}[c]{@{}c@{}}JDK 12,\\ Java HotSpot VM with AOT\end{tabular}} & 89.1                                                                          & 119.60                                                                                          & 147.82                                                                                  & 69.21                                                                                 \\ \hline
+\textbf{GraalVM Native Image}                                                       & 1.9                                                                           & 0.53                                                                                            & 1.98                                                                                    & 3.37                                                                                  \\ \hline
+\end{tabular}
+\renewcommand{\arraystretch}{1}
+}
+\end{center}
+\caption{Poređenje statističkih podataka prilikom izvršavanja programa "Hello World".}
+\label{tab:poređenje}
+\end{table}
+
+
+\begin{primer}
+Jedna od vodećih svetskih kompanija u sferi Cloud-a, \textit{Amazon}, testirala \cite{AWS_istraživanje} je proizvoljnu aplikaciju na svojoj platformi, koristeći JVM i GraalVM Native Image. Dobijeni rezultati prikazani su na slikama \ref{fig:poređenjeVremena} i \ref{fig:poređenjeMemorije}. Kako grafici pokazuju GraalVM Native Image ima daleko manje vreme pokretanja i manje zauzeće memorije u odnosu na aplikaciju pokrenutu Java virtuelnom mašinom. 
+\end{primer}
+
+    
+\begin{figure}[h!]
+\begin{center}
+\includegraphics[scale=0.4]{JVM_vs_NativeImage_time_forRequest.png}
+\end{center}
+\caption{Poređenje vremena pokretanja aplikacije izvršene JVM-om i GraalVM Native Image-om}
+\label{fig:poređenjeVremena}
+\end{figure}
+
+
+\begin{figure}[h!]
+\begin{center}
+\includegraphics[scale=0.4]{JVM_vs_NativeImage_memory_forRequest.png}
+\end{center}
+\caption{Poređenje memorijskog zauzeća aplikacije izvršene JVM-om i GraalVM Native Image-om}
+\label{fig:poređenjeMemorije}
+\end{figure}
+
+
+\newpage
+\begin{primer}
+Navešćemo i sledeći primer\cite{WebServisi}: Pokrenuta je serverska aplikacija pomoću klasičnog JVM-a i Native Image-a. Kako bi se performanse uporedile, mereni su sledeći parametri:
+\begin{itemize}
+    \item Vreme proteklo od pokretanja aplikacije do prvog odgovora servera na HTTP zahtev(slika \ref{fig:vremeDoPrvogOdgovora}) - na Y osi dato je vreme potrebno da se pošalje prvi odgovor. Test je ponovljen 100 puta(X osa). 
+    \item Vreme neophodno da server da odgovor na HTTP zahtev kada je pod velikim opterećenjem(slika \ref{fig:vremePodOpterecenjem}) - na Y osi dato je vreme neophodno da se pošalje odgovor servera doj je na X osi dat procenat opterećenosti servera.
+\end{itemize}
+I na ovom primeru vidimo da Native Image daje daleko bolje rezultate od standardnog JVM pristupa.
+\end{primer}
+
+
+\begin{figure}[h!]
+\begin{center}
+\includegraphics[scale=0.55]{NativeImage_vs_JVM_forWebServices.png}
+\end{center}
+\caption{Vreme proteklo od pokretanja aplikacije do prvog odgovora servera na HTTP zahtev}
+\label{fig:vremeDoPrvogOdgovora}
+\end{figure}
+
+
+\begin{figure}[h!]
+\begin{center}
+\includegraphics[scale=0.55]{lower-sustained-response-time.png}
+\end{center}
+\caption{Vreme neophodno da server da odgovor na HTTP zahtev kada je pod velikim opterećenjem}
+\label{fig:vremePodOpterecenjem}
+\end{figure}
+
+
+\newpage
+\section{Zaključak}
+Prateći trendove i pravac kojim se razvija moderno računarstvo, kao i ekonomske potrebe kompanija, Native Image je, krenuvši od istraživačkog projekta, došao do tačke gde se očekuje da veliki broj krajnjih korisnika dođe u dodir sa njegovom primenom. Primarnu ulogu, imaće u svetu Cloud sistema, zbog značajno boljih performansi u odnosu na druge načine prevođenja aplikacija.Pokazatelj napretka u razvoju ove tehnologije
+jeste i to što veliki broj pružalaca Cloud usluga nudi svojim korisnicima da koriste Native Image za izvršavanje svojih aplikacija. \\
+\indent Pored toga, Native Image u sklopu GraalVM-a dolazi u obliku Enterprise(plaćena verzija) i Community verzije. Upravo pristup da se određeni kod podeli sa zajednicom, omogućava Native Image-u da njegovom unapređenju doprinesu i njegovi krajnji korisnici a ne samo programeri zaposleni na ovom projektu. \\ 
+\indent Takođe, važno je napomenuti da na tržištu trenutno ne postoji adekvatna zamena za Native Image. Zapravo, ne postoji(barem ne popularan ili često primenjivan) ni AOT pristup kompajliranja Java programa(jer Native Image ne podrazumeva samo AOT kompajliranje Java-e) koji bi mogao da bude konkurent Native Image-u. 
+
+
+\newpage
+\addcontentsline{toc}{section}{Literatura}
+\begin{thebibliography}{9}
+
+\bibitem{Uvod}
+https://www.infoq.com/articles/native-java-graalvm/
+
+\bibitem{Arhitektura}
+https://docs.oracle.com/en/graalvm/enterprise/22/docs/overview/architecture/
+
+\bibitem{PregledSistema}
+Christian Wimmer,Codrut Stancu, Peter Hofer, Vojin Jovanović, Paul Wogerer, Peter B.Kessler, Oleg Pliss, Thomas Wurthinger. \textit{Initialize Once, Start Fast: Application Initialization
+at Build Time}, 2019.
+
+\bibitem{AnalizaPokazivaca}
+https://engineering.purdue.edu/Cetus/Documentation/manual/ch07s05.html
+
+
+\bibitem{FazeIzvrsavanja}
+https://www.graalvm.org/22.0/reference-manual/native-image/
+
+\bibitem{Substitucije}
+https://build-native-java-apps.cc/developer-guide/substitution/
+
+\bibitem{AWS_istraživanje}
+https://aws.amazon.com/blogs/developer/graalvm-native-image-support-in-the-aws-sdk-for-java-2-x/
+
+\bibitem{WebServisi}
+https://www.inner-product.com/posts/benchmarking-graalvm-native-image/
+
+\end{thebibliography}
+
+\end{document}
